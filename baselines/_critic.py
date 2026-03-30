@@ -1,104 +1,122 @@
 from baselines._base import Baseline
 
+from itertools import chain
+
 import torch
 import torch.nn as nn
 
 
 class CriticBaseline(Baseline):
+    STATE_FEAT_SIZE = 8
+
     def __init__(self, learner, cust_count, use_qval = True, use_cumul_reward = False, hidden_size = None):
         super().__init__(learner, use_cumul_reward)
         self.use_qval = use_qval
+        self.cust_count = cust_count
         if hidden_size is None:
             hidden_size = 128
         out_size = cust_count + 1 if use_qval else 1
-        self.project = nn.Sequential(
+        self.project_compat = nn.Sequential(
             nn.Linear(cust_count + 1, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, out_size)
         )
+        self.project_state = nn.Sequential(
+            nn.Linear(self.STATE_FEAT_SIZE, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, out_size),
+        )
+
+    def _masked_min(self, values, valid_mask):
+        inf = torch.full_like(values, float("inf"))
+        masked = torch.where(valid_mask, values, inf)
+        min_val = masked.min(dim = 1, keepdim = True).values
+        has_valid = valid_mask.any(dim = 1, keepdim = True)
+        return torch.where(has_valid, min_val, torch.zeros_like(min_val))
+
+    def _build_state_features(self, vrp_dynamics):
+        cur_veh = vrp_dynamics.cur_veh.squeeze(1)
+        nodes = vrp_dynamics.nodes
+        device = nodes.device
+
+        served = getattr(vrp_dynamics, "served", None)
+        if served is None:
+            served = torch.zeros(nodes.size(0), nodes.size(1), dtype = torch.bool, device = device)
+
+        hidden = getattr(vrp_dynamics, "cust_mask", None)
+        if hidden is None:
+            hidden = torch.zeros_like(served)
+
+        pending = (~served) & (~hidden)
+        if pending.size(1) > 0:
+            pending[:, 0] = False
+
+        pending_count = pending.float().sum(dim = 1, keepdim = True)
+        denom = max(vrp_dynamics.nodes_count - 1, 1)
+        pending_ratio = pending_count / float(denom)
+
+        demand = nodes[:, :, 2]
+        pending_demand = (demand * pending.float()).sum(dim = 1, keepdim = True)
+        mean_pending_demand = pending_demand / pending_count.clamp_min(1.0)
+
+        if nodes.size(-1) >= 5:
+            cur_time = cur_veh[:, 3:4]
+            tw_close = nodes[:, :, 4]
+            slack = tw_close - cur_time
+            min_slack = self._masked_min(slack, pending)
+            late_count = ((slack < 0) & pending).float().sum(dim = 1, keepdim = True)
+            late_ratio = late_count / pending_count.clamp_min(1.0)
+        else:
+            min_slack = cur_veh.new_zeros((cur_veh.size(0), 1))
+            late_ratio = cur_veh.new_zeros((cur_veh.size(0), 1))
+
+        return torch.cat([
+            cur_veh,
+            pending_ratio,
+            mean_pending_demand,
+            min_slack,
+            late_ratio,
+        ], dim = 1)
 
     def eval_step(self, vrp_dynamics, learner_compat, cust_idx):
-        compat = learner_compat.detach().clone()
-        compat[vrp_dynamics.cur_veh_mask] = 0
-        val = self.project(compat)
+        compat = learner_compat
+        if isinstance(learner_compat, dict):
+            compat = learner_compat.get("compat", None)
+
+        if compat is not None and compat.dim() == 3 and compat.size(-1) == self.cust_count + 1:
+            compat = compat.detach().clone()
+            compat[vrp_dynamics.cur_veh_mask] = 0
+            val = self.project_compat(compat)
+            if self.use_qval:
+                safe_idx = cust_idx.clamp(0, val.size(2) - 1)
+                val = val.gather(2, safe_idx.unsqueeze(1).expand(-1, 1, -1))
+            return val.squeeze(1)
+
+        state_feat = self._build_state_features(vrp_dynamics).detach()
+        val = self.project_state(state_feat)
         if self.use_qval:
-            # Guard against rare invalid sampled indices on GPU to avoid device-side asserts.
-            safe_idx = cust_idx.clamp_(0, val.size(2) - 1)
-            val = val.gather(2, safe_idx.unsqueeze(1).expand(-1,1,-1))
-        return val.squeeze(1)
-
-    def __call__(self, vrp_dynamics):
-        vrp_dynamics.reset()
-        cust_mask = getattr(vrp_dynamics, "cust_mask", None)
-        self.learner._encode_customers(vrp_dynamics.nodes, cust_mask)
-        if hasattr(vrp_dynamics, "veh_speed"):
-            self.learner.veh_speed = vrp_dynamics.veh_speed
-        if hasattr(self.learner, "_reset_memory"):
-            self.learner._reset_memory(vrp_dynamics)
-        actions, logps, rewards, bl_vals = [], [], [], []
-        while not vrp_dynamics.done:
-            veh_repr = self.learner._repr_vehicle(
-                    vrp_dynamics.vehicles,
-                    vrp_dynamics.cur_veh_idx,
-                    vrp_dynamics.mask)
-            if hasattr(self.learner, "_compute_edge_embedding") and hasattr(self.learner, "_compute_owner_bias") and hasattr(self.learner, "_compute_lookahead"):
-                edge_emb = self.learner._compute_edge_embedding(
-                    vrp_dynamics.vehicles,
-                    vrp_dynamics.nodes,
-                    vrp_dynamics.cur_veh_idx,
-                    vrp_dynamics.cur_veh_mask,
-                )
-                owner_bias = self.learner._compute_owner_bias(vrp_dynamics.cur_veh_idx)
-                lookahead = self.learner._compute_lookahead(veh_repr, self.learner.cust_repr, edge_emb)
-                compat = self.learner._score_customers(
-                    veh_repr,
-                    self.learner.cust_repr,
-                    edge_emb,
-                    owner_bias,
-                    lookahead,
-                    vrp_dynamics.cur_veh_mask)
-            else:
-                compat = self.learner._score_customers(veh_repr)
-            logp = self.learner._get_logp(compat, vrp_dynamics.cur_veh_mask)
-            probs = logp.exp()
-            bad = (~torch.isfinite(probs)).any(dim = 1, keepdim = True) | (probs.sum(dim = 1, keepdim = True) <= 0)
-            if bad.any():
-                safe = torch.zeros_like(probs)
-                safe[:, 0] = 1.0
-                probs = torch.where(bad, safe, probs)
-            cust_idx = probs.multinomial(1)
-            # Keep actions in valid domain for all downstream gather/scatter calls.
-            if cust_idx.dtype != torch.int64:
-                cust_idx = cust_idx.long()
-            if vrp_dynamics.nodes_count > 0:
-                cust_idx = cust_idx.clamp(0, vrp_dynamics.nodes_count - 1)
-
-            # If a masked customer was sampled due to numerical issues, route to depot.
-            chosen_mask = vrp_dynamics.cur_veh_mask.gather(2, cust_idx.unsqueeze(1)).squeeze(1)
-            if chosen_mask.any():
-                cust_idx = cust_idx.masked_fill(chosen_mask, 0)
-
-            if not(self.use_cumul and bl_vals):
-                bl_vals.append( self.eval_step(vrp_dynamics, compat, cust_idx) )
-            if hasattr(self.learner, "_update_memory") and "edge_emb" in locals():
-                self.learner._update_memory(vrp_dynamics.cur_veh_idx, cust_idx, veh_repr, edge_emb)
-            actions.append( (vrp_dynamics.cur_veh_idx, cust_idx) )
-            logps.append( logp.gather(1, cust_idx) )
-            r = vrp_dynamics.step(cust_idx)
-            rewards.append(r)
-        if self.use_cumul:
-            rewards = torch.stack(rewards).sum(dim = 0)
-            bl_vals = bl_vals[0]
-        return actions, logps, rewards, bl_vals
+            safe_idx = cust_idx.clamp(0, val.size(1) - 1)
+            val = val.gather(1, safe_idx)
+        return val
 
     def parameters(self):
-        return self.project.parameters()
+        return chain(self.project_compat.parameters(), self.project_state.parameters())
 
     def state_dict(self):
-        return self.project.state_dict()
+        return {
+            "project_compat": self.project_compat.state_dict(),
+            "project_state": self.project_state.state_dict(),
+        }
 
     def load_state_dict(self, state_dict):
-        return self.project.load_state_dict(state_dict)
+        if "project_compat" in state_dict:
+            self.project_compat.load_state_dict(state_dict["project_compat"])
+            self.project_state.load_state_dict(state_dict.get("project_state", {}), strict = False)
+            return
+
+        # Backward compatibility with old checkpoints storing only one critic head.
+        self.project_compat.load_state_dict(state_dict, strict = False)
 
     def to(self, device):
-        self.project.to(device = device)
+        self.project_compat.to(device = device)
+        self.project_state.to(device = device)

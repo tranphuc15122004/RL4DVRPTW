@@ -1,4 +1,4 @@
-import tqdm
+from tqdm import tqdm
 from MVMoe import *
 from problems import *
 from baselines import *
@@ -23,12 +23,125 @@ import math
 from itertools import chain
 
 
+def _format_param_count(count: int) -> str:
+    return "{:,}".format(int(count))
+
+
+def print_model_param_report(model: torch.nn.Module, model_name: str = "MVMoE"):
+    total_params = 0
+    trainable_params = 0
+
+    print("[model] {} parameter report".format(model_name))
+    for name, param in model.named_parameters():
+        param_count = param.numel()
+        total_params += param_count
+        if param.requires_grad:
+            trainable_params += param_count
+
+        print(
+            "  - {:60s} shape={} numel={} {}".format(
+                name,
+                tuple(param.shape),
+                _format_param_count(param_count),
+                "trainable" if param.requires_grad else "frozen",
+            )
+        )
+
+    frozen_params = total_params - trainable_params
+    print(
+        "[model] total={} trainable={} frozen={}".format(
+            _format_param_count(total_params),
+            _format_param_count(trainable_params),
+            _format_param_count(frozen_params),
+        )
+    )
+    if total_params > 0:
+        print("[model] trainable ratio={:.2%}".format(trainable_params / float(total_params)))
+
+
 def _is_cuda_device_assert_error(exc: Exception) -> bool:
     msg = str(exc).lower()
     return (
         "device-side assert triggered" in msg
         or "cuda error" in msg and "assert" in msg
     )
+
+
+def _is_oom_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return (
+        "out of memory" in msg
+        or "cublas_status_alloc_failed" in msg
+        or "defaultcpuallocator" in msg and "memory" in msg
+    )
+
+
+def _cleanup_after_oom(optim: Adam = None):
+    if optim is not None:
+        try:
+            optim.zero_grad(set_to_none = True)
+        except Exception:
+            pass
+
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+        try:
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
+
+
+def _apply_resource_profile(args, device, verbose_print):
+    profile_enabled = getattr(args, "resource_safe", False) or getattr(args, "smoke_test", False)
+    if not profile_enabled:
+        return
+
+    if getattr(args, "smoke_test", False):
+        smoke_caps = {
+            "epoch_count": 1,
+            "iter_count": 1,
+            "batch_size": 8,
+            "test_batch_size": 8,
+            "customers_count": 10,
+            "vehicles_count": 2,
+            "model_size": 64,
+            "layer_count": 2,
+            "head_count": 4,
+            "ff_size": 128,
+            "num_workers": 0,
+        }
+        changed = []
+        for key, cap in smoke_caps.items():
+            current = getattr(args, key)
+            if current is None:
+                continue
+            if current > cap:
+                setattr(args, key, cap)
+                changed.append("{}:{}->{}".format(key, current, cap))
+        args.pin_memory = False
+        if changed:
+            verbose_print("[safe] smoke profile active ({})".format(", ".join(changed)))
+
+    if getattr(args, "resource_safe", False):
+        args.num_workers = max(0, int(args.num_workers))
+        if args.num_workers == 0:
+            args.pin_memory = False
+
+    if device.type == "cuda":
+        vram_fraction = args.max_vram_fraction
+        if vram_fraction is None and getattr(args, "smoke_test", False):
+            vram_fraction = 0.9
+        if vram_fraction is not None:
+            vram_fraction = min(1.0, max(0.1, float(vram_fraction)))
+            try:
+                dev_index = device.index if device.index is not None else torch.cuda.current_device()
+                torch.cuda.set_per_process_memory_fraction(vram_fraction, device = dev_index)
+                verbose_print("[safe] capped process VRAM usage to {:.0%}".format(vram_fraction))
+            except Exception as exc:
+                print("[warn] failed to set max VRAM fraction: {}".format(exc))
 
 
 def _is_finite_scalar(value) -> bool:
@@ -330,45 +443,58 @@ def train_epoch(args, data, Environment : VRP_Environment, env_params, bl_wrappe
 
 def test_epoch(args, test_env, learner, ref_costs):
     learner.eval()
-    with torch.no_grad():   # 🔥 BẮT BUỘC
-        
-        if args.problem_type[0] == "s":
-            costs = test_env.nodes.new_zeros(test_env.minibatch_size)
-            for _ in range(100):
-                _, _, rewards = learner(test_env)
-                costs -= torch.stack(rewards).sum(0).squeeze(-1)
-            costs = costs / 100
-        else:
-            _, _, rs = learner(test_env)
-            costs = -torch.stack(rs).sum(dim = 0).squeeze(-1)
-        mean = costs.mean()
-        std = costs.std()
-        gap = (costs.to(ref_costs.device) / ref_costs - 1).mean()
+    prev_greedy = getattr(learner, "greedy", None)
+    if prev_greedy is not None:
+        learner.greedy = True
+    try:
+        with torch.no_grad():   # 🔥 BẮT BUỘC
+            if args.problem_type[0] == "s":
+                costs = test_env.nodes.new_zeros(test_env.minibatch_size)
+                for _ in range(100):
+                    _, _, rewards = learner(test_env)
+                    costs -= torch.stack(rewards).sum(0).squeeze(-1)
+                costs = costs / 100
+            else:
+                _, _, rs = learner(test_env)
+                costs = -torch.stack(rs).sum(dim = 0).squeeze(-1)
+            mean = costs.mean()
+            std = costs.std()
+            gap = (costs.to(ref_costs.device) / ref_costs - 1).mean()
+    finally:
+        if prev_greedy is not None:
+            learner.greedy = prev_greedy
 
     print("Cost on test dataset: {:5.2f} +- {:5.2f} ({:.2%})".format(mean, std, gap))
     return mean.item(), std.item(), gap.item()
 
 def val_epoch(args, test_env, learner):
     learner.eval()
-    with torch.no_grad():   # 🔥 BẮT BUỘC
-        if args.problem_type[0] == "s":
-            costs = test_env.nodes.new_zeros(test_env.minibatch_size)
-            for _ in range(100):
-                _, _, rewards = learner(test_env)
-                costs -= torch.stack(rewards).sum(0).squeeze(-1)
-            costs = costs / 100
-        else:
-            _, _, rs = learner(test_env)
-            costs = -torch.stack(rs).sum(dim = 0).squeeze(-1)
-        mean = costs.mean()
-        std = costs.std()
+    prev_greedy = getattr(learner, "greedy", None)
+    if prev_greedy is not None:
+        learner.greedy = True
+    try:
+        with torch.no_grad():   # 🔥 BẮT BUỘC
+            if args.problem_type[0] == "s":
+                costs = test_env.nodes.new_zeros(test_env.minibatch_size)
+                for _ in range(100):
+                    _, _, rewards = learner(test_env)
+                    costs -= torch.stack(rewards).sum(0).squeeze(-1)
+                costs = costs / 100
+            else:
+                _, _, rs = learner(test_env)
+                costs = -torch.stack(rs).sum(dim = 0).squeeze(-1)
+            mean = costs.mean()
+            std = costs.std()
+    finally:
+        if prev_greedy is not None:
+            learner.greedy = prev_greedy
 
     print("Cost on test dataset: {:5.2f} +- {:5.2f}".format(mean, std))
     return mean.item(), std.item()
 
 def main(args):
     dev = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
-    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = not (getattr(args, "resource_safe", False) or getattr(args, "smoke_test", False))
     if args.rng_seed is not None:
         torch.manual_seed(args.rng_seed)
 
@@ -376,6 +502,8 @@ def main(args):
         verbose_print = print
     else:
         def verbose_print(*args, **kwargs): pass
+
+    _apply_resource_profile(args, dev, verbose_print)
 
     # PROBLEM
     Dataset = {
@@ -418,6 +546,7 @@ def main(args):
             args.test_batch_size,
             *gen_params
             )
+    test_data.normalize()
     verbose_print("Done.")
 
 
@@ -459,6 +588,7 @@ def main(args):
     )
     
     learner.to(dev)
+    print_model_param_report(learner, learner.__class__.__name__)
     verbose_print("Done.")
 
     # BASELINE
@@ -554,9 +684,44 @@ def main(args):
     ep = start_ep - 1
     try:
         for ep in range(start_ep, args.epoch_count):
-            train_stats.append( train_epoch(args, train_data, Environment, env_params, baseline, optim, dev, ep, scaler) )
-            
-            val_stats.append(val_epoch(args , test_env , learner))
+            oom_retries = 0
+            while True:
+                try:
+                    train_stats.append(train_epoch(args, train_data, Environment, env_params, baseline, optim, dev, ep, scaler))
+                    break
+                except RuntimeError as exc:
+                    if not _is_oom_error(exc):
+                        raise
+
+                    oom_retries += 1
+                    _cleanup_after_oom(optim)
+                    old_batch = args.batch_size
+                    old_workers = args.num_workers
+                    if old_batch <= 1 or oom_retries > 5:
+                        raise RuntimeError(
+                            "OOM persisted after {} retries (batch_size={})".format(oom_retries, old_batch)
+                        ) from exc
+                    args.batch_size = max(1, old_batch // 2)
+                    args.num_workers = max(0, old_workers // 2)
+                    if args.num_workers == 0:
+                        args.pin_memory = False
+                    print("[warn] OOM at epoch {}. Retrying with batch_size {}->{} and num_workers {}->{}".format(
+                        ep + 1,
+                        old_batch,
+                        args.batch_size,
+                        old_workers,
+                        args.num_workers,
+                    ))
+
+            try:
+                val_stats.append(val_epoch(args, test_env, learner))
+            except RuntimeError as exc:
+                if not _is_oom_error(exc):
+                    raise
+                _cleanup_after_oom()
+                print("[warn] OOM during validation at epoch {}; logging NaN val stats for this epoch".format(ep + 1))
+                val_stats.append((float("nan"), float("nan")))
+
             cur_val_mu = val_stats[-1][0]
             if math.isfinite(cur_val_mu) and cur_val_mu < best_val_mu:
                 best_val_mu = float(cur_val_mu)

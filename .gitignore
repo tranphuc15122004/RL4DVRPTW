@@ -1,0 +1,83 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# =========================
+# C extensions
+# =========================
+*.so
+
+# =========================
+# Distribution / packaging
+# =========================
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# =========================
+# Virtual environments
+# =========================
+.env
+.venv
+venv/
+ENV/
+env/
+conda-meta/
+
+# =========================
+# Jupyter Notebook
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# Logs
+# =========================
+*.log
+logs/
+wandb/
+tensorboard/
+runs/
+
+# =========================
+# Outputs / results
+# =========================
+output/
+outputs/
+results/
+checkpoints/
+ckpt/
+*.ckpt
+*.pt
+*.pth
+
+# =========================
+# Data (tuỳ bạn)
+# =========================
+data/
+datasets/
+*.csv
+*.json
+*.npz
+
+# =========================
+# VSCode / IDE
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# System files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Misc
+# =========================
+*.tmp
+*.bak
+*.swp

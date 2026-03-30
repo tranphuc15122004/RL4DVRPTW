@@ -368,15 +368,20 @@ class PointerAttnMoE(PointerAttention):
         """Implementation of Hierarchical Gating based on Zhou et al. (2024) <https://arxiv.org/abs/2405.01029>."""
         if self.moe_kwargs["light_version"]:
             num_nodes, num_available_nodes = attn_mask.size(-1), attn_mask.sum(-1)
+            probs = getattr(self, "probs", None)
             # only do this at the "second" step, which is depot -> pomo -> first select
-            if (num_available_nodes >= num_nodes - 1).any():
-                self.probs = F.softmax(
+            if (num_available_nodes >= num_nodes - 1).any() or probs is None:
+                probs = F.softmax(
                     self.dense_or_moe(out.view(-1, out.size(-1)).mean(dim=0, keepdim=True)),
                     dim=-1,
                 )
-            selected = self.probs.multinomial(1).squeeze(0)
+            elif probs.device != out.device or probs.dtype != out.dtype:
+                probs = probs.to(device=out.device, dtype=out.dtype)
+
+            self.probs = probs
+            selected = probs.multinomial(1).squeeze(0)
             out = self.project_out_moe(out) if selected.item() == 1 else self.project_out(out)
-            glimpse = out * self.probs.squeeze(0)[selected]
+            glimpse = out * probs.squeeze(0)[selected]
         else:
             glimpse = self.project_out_moe(out)
         return glimpse

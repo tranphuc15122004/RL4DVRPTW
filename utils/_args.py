@@ -67,6 +67,9 @@ LOSS_USE_CUMUL = False
 AMP = False
 NUM_WORKERS = 4
 PIN_MEMORY = True
+SMOKE_TEST = False
+RESOURCE_SAFE = False
+MAX_VRAM_FRACTION = None
 
 BASELINE = "none"
 ROLLOUT_COUNT = 3
@@ -292,6 +295,12 @@ def parse_args(argv = None):
     group.add_argument("--amp", action = "store_true", default = AMP)
     group.add_argument("--num-workers", type = int, default = NUM_WORKERS)
     group.add_argument("--pin-memory", action = "store_true", default = PIN_MEMORY)
+    group.add_argument("--smoke-test", action = "store_true", default = SMOKE_TEST,
+            help = "Apply a tiny low-resource profile for fast sanity checks")
+    group.add_argument("--resource-safe", action = "store_true", default = RESOURCE_SAFE,
+            help = "Enable runtime safeguards against hardware overuse (OOM handling, conservative cuDNN)")
+    group.add_argument("--max-vram-fraction", type = float, default = MAX_VRAM_FRACTION,
+            help = "Limit this process to a fraction of GPU VRAM (0,1], e.g. 0.9")
 
     group = parser.add_argument_group("Baselines parameters")
     group.add_argument("--baseline-type", type = str,

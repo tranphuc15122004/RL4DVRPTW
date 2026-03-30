@@ -1,5 +1,11 @@
 from baselines._base import Baseline
-from dep import SCIPY_ENABLED, ttest_rel
+
+try:
+    from scipy.stats import ttest_rel
+    SCIPY_ENABLED = True
+except ImportError:
+    ttest_rel = None
+    SCIPY_ENABLED = False
 
 import copy
 import torch
