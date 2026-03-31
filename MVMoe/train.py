@@ -189,6 +189,28 @@ def _ensure_supported_cuda_or_fallback(args, device):
     return device
 
 
+def _generate_normalized_train_data(args, Dataset, gen_params, verbose_print, ep = None):
+    sample_count = args.iter_count * args.batch_size
+    if ep is None:
+        label = "Generating {} {} samples of training data...".format(
+            sample_count,
+            args.problem_type.upper(),
+        )
+    else:
+        label = "Generating {} {} samples of training data (epoch {}/{})...".format(
+            sample_count,
+            args.problem_type.upper(),
+            ep + 1,
+            args.epoch_count,
+        )
+
+    verbose_print(label, end = " ", flush = True)
+    train_data = Dataset.generate(sample_count, *gen_params)
+    train_data.normalize()
+    verbose_print("Done.")
+    return train_data
+
+
 def _is_finite_scalar(value) -> bool:
     if isinstance(value, torch.Tensor):
         return bool(torch.isfinite(value).all().item())
@@ -576,15 +598,11 @@ def main(args):
         gen_params.extend( [args.deg_of_dyna, args.appear_early_ratio] )
 
     # TRAIN DATA
-    verbose_print("Generating {} {} samples of training data...".format(
-        args.iter_count * args.batch_size, args.problem_type.upper()),
-        end = " ", flush = True)
-    train_data = Dataset.generate(
-            args.iter_count * args.batch_size,
-            *gen_params
-            )
-    train_data.normalize()
-    verbose_print("Done.")
+    train_data = None
+    if args.regen_train_data_each_epoch:
+        verbose_print("Training data regeneration mode enabled (fresh dataset every epoch).")
+    else:
+        train_data = _generate_normalized_train_data(args, Dataset, gen_params, verbose_print)
 
     # TEST DATA AND COST REFERENCE
     verbose_print("Generating {} {} samples of test data...".format(
@@ -732,6 +750,9 @@ def main(args):
     ep = start_ep - 1
     try:
         for ep in range(start_ep, args.epoch_count):
+            if args.regen_train_data_each_epoch:
+                train_data = _generate_normalized_train_data(args, Dataset, gen_params, verbose_print, ep)
+
             oom_retries = 0
             while True:
                 try:

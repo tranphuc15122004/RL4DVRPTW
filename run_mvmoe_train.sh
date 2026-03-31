@@ -43,6 +43,7 @@ PIN_MEMORY="${PIN_MEMORY:-1}"
 RESOURCE_SAFE="${RESOURCE_SAFE:-1}"
 ADV_NORM="${ADV_NORM:-1}"
 NO_CUDA="${NO_CUDA:-0}"
+REGEN_TRAIN_DATA_EACH_EPOCH="${REGEN_TRAIN_DATA_EACH_EPOCH:-0}"
 
 # Checkpoint / reproducibility
 RESUME="${RESUME:-}"
@@ -82,6 +83,9 @@ if [[ "$ADV_NORM" == "1" ]]; then
 fi
 if [[ "$NO_CUDA" == "1" ]]; then
   EXTRA_ARGS+=(--no-cuda)
+fi
+if [[ "$REGEN_TRAIN_DATA_EACH_EPOCH" == "1" ]]; then
+  EXTRA_ARGS+=(--regen-train-data-each-epoch)
 fi
 
 PYTHONPATH=. "$PYTHON_BIN" -m MVMoe.train \

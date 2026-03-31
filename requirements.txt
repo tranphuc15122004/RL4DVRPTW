@@ -19,7 +19,6 @@ dill==0.4.0
 einops==0.8.2
 et_xmlfile==2.0.0
 filelock==3.20.1
-flash_attn==2.8.3
 fonttools==4.61.1
 frozenlist==1.8.0
 fsspec==2025.12.0

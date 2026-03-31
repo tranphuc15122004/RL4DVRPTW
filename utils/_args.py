@@ -70,6 +70,7 @@ PIN_MEMORY = True
 SMOKE_TEST = False
 RESOURCE_SAFE = False
 MAX_VRAM_FRACTION = None
+REGEN_TRAIN_DATA_EACH_EPOCH = False
 
 BASELINE = "none"
 ROLLOUT_COUNT = 3
@@ -301,6 +302,8 @@ def parse_args(argv = None):
             help = "Enable runtime safeguards against hardware overuse (OOM handling, conservative cuDNN)")
     group.add_argument("--max-vram-fraction", type = float, default = MAX_VRAM_FRACTION,
             help = "Limit this process to a fraction of GPU VRAM (0,1], e.g. 0.9")
+    group.add_argument("--regen-train-data-each-epoch", action = "store_true", default = REGEN_TRAIN_DATA_EACH_EPOCH,
+            help = "Regenerate and normalize a fresh training dataset at the start of every epoch")
 
     group = parser.add_argument_group("Baselines parameters")
     group.add_argument("--baseline-type", type = str,
