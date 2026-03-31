@@ -144,6 +144,51 @@ def _apply_resource_profile(args, device, verbose_print):
                 print("[warn] failed to set max VRAM fraction: {}".format(exc))
 
 
+def _get_supported_cuda_sms():
+    sms = set()
+    try:
+        for arch in torch.cuda.get_arch_list():
+            if arch.startswith("sm_"):
+                sms.add(int(arch.split("_", 1)[1]))
+            elif arch.startswith("compute_"):
+                sms.add(int(arch.split("_", 1)[1]))
+    except Exception:
+        pass
+    return sms
+
+
+def _ensure_supported_cuda_or_fallback(args, device):
+    if device.type != "cuda":
+        return device
+
+    try:
+        cap_major, cap_minor = torch.cuda.get_device_capability(device)
+        device_sm = cap_major * 10 + cap_minor
+        supported_sms = _get_supported_cuda_sms()
+
+        if supported_sms and device_sm not in supported_sms:
+            dev_name = torch.cuda.get_device_name(device)
+            supported_str = ", ".join("sm_{}".format(sm) for sm in sorted(supported_sms))
+            print(
+                "[warn] CUDA device '{}' (sm_{}) is unsupported by this PyTorch build (supports: {}). "
+                "Falling back to CPU. Install a PyTorch build compatible with sm_{} to use GPU.".format(
+                    dev_name,
+                    device_sm,
+                    supported_str,
+                    device_sm,
+                )
+            )
+            args.no_cuda = True
+            if args.amp:
+                print("[warn] Disabling AMP because CUDA is unavailable/unsupported.")
+                args.amp = False
+            return torch.device("cpu")
+    except Exception as exc:
+        print("[warn] CUDA capability check failed ({}). Continuing with device '{}'".format(exc, device))
+
+    return device
+
+
 def _is_finite_scalar(value) -> bool:
     if isinstance(value, torch.Tensor):
         return bool(torch.isfinite(value).all().item())
@@ -494,7 +539,10 @@ def val_epoch(args, test_env, learner):
 
 def main(args):
     dev = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
-    torch.backends.cudnn.benchmark = not (getattr(args, "resource_safe", False) or getattr(args, "smoke_test", False))
+    dev = _ensure_supported_cuda_or_fallback(args, dev)
+    torch.backends.cudnn.benchmark = (dev.type == "cuda") and not (
+        getattr(args, "resource_safe", False) or getattr(args, "smoke_test", False)
+    )
     if args.rng_seed is not None:
         torch.manual_seed(args.rng_seed)
 
