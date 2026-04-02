@@ -10,7 +10,7 @@ VEHICLES="${VEHICLES:-3}"
 
 # Training schedule
 EPOCHS="${EPOCHS:-500}"
-ITERS="${ITERS:-10}"
+ITERS="${ITERS:-100}"
 BATCH="${BATCH:-128}"
 TEST_BATCH="${TEST_BATCH:-100}"
 LR="${LR:-1e-4}"
@@ -20,16 +20,13 @@ MAX_GRAD_NORM="${MAX_GRAD_NORM:-2}"
 CHECKPOINT_PERIOD="${CHECKPOINT_PERIOD:-5}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 
-# Model architecture
+# PolyNet model
 MODEL_SIZE="${MODEL_SIZE:-128}"
-LAYER_COUNT="${LAYER_COUNT:-2}"
-HEAD_COUNT="${HEAD_COUNT:-4}"
-FF_SIZE="${FF_SIZE:-256}"
-EDGE_FEAT_SIZE="${EDGE_FEAT_SIZE:-8}"
+LAYER_COUNT="${LAYER_COUNT:-3}"
+HEAD_COUNT="${HEAD_COUNT:-8}"
+FF_SIZE="${FF_SIZE:-512}"
+TANH_XPLOR="${TANH_XPLOR:-10}"
 CUST_K="${CUST_K:-20}"
-MEMORY_SIZE="${MEMORY_SIZE:-128}"
-LOOKAHEAD_HIDDEN="${LOOKAHEAD_HIDDEN:-128}"
-DROPOUT="${DROPOUT:-0.1}"
 
 # Baseline / optimization
 BASELINE_TYPE="${BASELINE_TYPE:-critic}"
@@ -88,7 +85,7 @@ if [[ "$REGEN_TRAIN_DATA_EACH_EPOCH" == "1" ]]; then
   EXTRA_ARGS+=(--regen-train-data-each-epoch)
 fi
 
-PYTHONPATH=. "$PYTHON_BIN" -m MVMoe.train \
+PYTHONPATH=. "$PYTHON_BIN" -m polynet.train \
   --problem-type      "$PROBLEM_TYPE" \
   --customers-count   "$CUSTOMERS" \
   --vehicles-count    "$VEHICLES" \
@@ -105,10 +102,8 @@ PYTHONPATH=. "$PYTHON_BIN" -m MVMoe.train \
   --layer-count       "$LAYER_COUNT" \
   --head-count        "$HEAD_COUNT" \
   --ff-size           "$FF_SIZE" \
-  --edge-feat-size    "$EDGE_FEAT_SIZE" \
-  --memory-size       "$MEMORY_SIZE" \
-  --lookahead-hidden  "$LOOKAHEAD_HIDDEN" \
-  --dropout           "$DROPOUT" \
+  --tanh-xplor        "$TANH_XPLOR" \
+  --cust-k            "$CUST_K" \
   --baseline-type     "$BASELINE_TYPE" \
   --critic-rate       "$CRITIC_LR" \
   --entropy-coef      "$ENTROPY_COEF" \
