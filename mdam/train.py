@@ -1,3 +1,12 @@
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    category = FutureWarning,
+    module = r"torchrl\.modules\.mcts\.scores",
+    message = r"functools\.partial will be a method descriptor in future Python versions.*",
+)
+
 from tqdm import tqdm
 from mdam import *
 from problems import *
@@ -743,6 +752,7 @@ def main(args):
     ep = start_ep - 1
     try:
         for ep in range(start_ep, args.epoch_count):
+            epoch_start_time = time.perf_counter()
             if args.regen_train_data_each_epoch:
                 train_data = _generate_normalized_train_data(args, Dataset, gen_params, verbose_print, ep)
 
@@ -803,6 +813,14 @@ def main(args):
 
             if (ep+1) % args.checkpoint_period == 0:
                 save_checkpoint(args, ep, learner, optim, baseline, lr_sched)
+
+            epoch_duration = time.perf_counter() - epoch_start_time
+            print("[time] epoch {}/{} finished in {:.2f}s ({:.2f} min)".format(
+                ep + 1,
+                args.epoch_count,
+                epoch_duration,
+                epoch_duration / 60.0,
+            ))
 
     except KeyboardInterrupt:
         try:

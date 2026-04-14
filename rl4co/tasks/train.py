@@ -1,7 +1,17 @@
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    category = FutureWarning,
+    module = r"torchrl\.modules\.mcts\.scores",
+    message = r"functools\.partial will be a method descriptor in future Python versions.*",
+)
+
 import hydra
 import lightning as L
 import pyrootutils
 import torch
+import time
 
 from lightning import Callback, LightningModule
 from lightning.pytorch.loggers import Logger
@@ -14,6 +24,29 @@ pyrootutils.setup_root(__file__, indicator=".gitignore", pythonpath=True)
 
 
 log = utils.get_pylogger(__name__)
+
+
+class EpochTimeLoggerCallback(Callback):
+    def __init__(self):
+        self._epoch_start_time = None
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        self._epoch_start_time = time.perf_counter()
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        if self._epoch_start_time is None:
+            return
+
+        epoch_duration = time.perf_counter() - self._epoch_start_time
+        epoch = trainer.current_epoch + 1
+        if trainer.max_epochs is not None and trainer.max_epochs > 0:
+            log.info(
+                f"[time] epoch {epoch}/{trainer.max_epochs} finished in {epoch_duration:.2f}s ({epoch_duration / 60.0:.2f} min)"
+            )
+        else:
+            log.info(
+                f"[time] epoch {epoch} finished in {epoch_duration:.2f}s ({epoch_duration / 60.0:.2f} min)"
+            )
 
 
 @utils.task_wrapper
@@ -43,6 +76,7 @@ def run(cfg: DictConfig) -> tuple[dict, dict]:
 
     log.info("Instantiating callbacks...")
     callbacks: list[Callback] = utils.instantiate_callbacks(cfg.get("callbacks"))
+    callbacks.append(EpochTimeLoggerCallback())
 
     log.info("Instantiating loggers...")
     logger: list[Logger] = utils.instantiate_loggers(cfg.get("logger"), model)
