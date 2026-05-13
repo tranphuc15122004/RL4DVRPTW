@@ -9,8 +9,8 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 # ---- Problem parameters ----
 PROBLEM_TYPE="${PROBLEM_TYPE:-dvrptw}"
-CUSTOMERS="${CUSTOMERS:-100}"
-VEHICLES="${VEHICLES:-5}"
+CUSTOMERS="${CUSTOMERS:-400}"
+VEHICLES="${VEHICLES:-20}"
 VEH_CAPA="${VEH_CAPA:-200}"
 VEH_SPEED="${VEH_SPEED:-1}"
 
@@ -25,18 +25,18 @@ TANH_XPLOR="${TANH_XPLOR:-10}"
 
 # ---- Inference mode ----
 # MODE can be: single-csv, single-pyth, batch-csv, batch-pyth
-MODE="${MODE:-single-csv}"
-DATA_PATH="${DATA_PATH:-data/datasets/100/h100c101.csv}"
+MODE="${MODE:-batch-csv}"
+DATA_PATH="${DATA_PATH:-data/datasets/h400}"
 
 # ---- Output ----
-OUTPUT_DIR="${OUTPUT_DIR:-output/am_infer}"
+OUTPUT_DIR="${OUTPUT_DIR:-infer/am_infer_400_cap200_s}"
 SAVE_JSON="${SAVE_JSON:-}"
 VERIFY="${VERIFY:-1}"
 PRINT_INSTANCES="${PRINT_INSTANCES:-3}"
 STOCH_ROLLOUTS="${STOCH_ROLLOUTS:-100}"
 
 # ---- Decode ----
-DECODE="${DECODE:-greedy}"   # greedy or sample
+DECODE="${DECODE:-sample}"   # greedy or sample
 
 # ---- Misc ----
 NO_CUDA="${NO_CUDA:-0}"
@@ -58,12 +58,7 @@ if [[ "$NO_NORMALIZE" == "1" ]]; then
   EXTRA_ARGS+=(--no-normalize)
 fi
 
-# Build decode flag
-if [[ "$DECODE" == "sample" ]]; then
-  EXTRA_ARGS+=(--sample)
-else
-  EXTRA_ARGS+=(--greedy)
-fi
+# Decode flags and other single-instance args will be added conditionally below
 
 # Use training args.json for auto-config if provided
 if [[ -n "$MODEL_ARGS" ]]; then
@@ -75,6 +70,16 @@ case "$MODE" in
   single-csv|single-pyth)
     # Use the dedicated single-instance script
     CMD="am/infer_single.py"
+    
+    EXTRA_ARGS+=(--max-print-instances "$PRINT_INSTANCES")
+    EXTRA_ARGS+=(--stoch-rollouts "$STOCH_ROLLOUTS")
+    
+    if [[ "$DECODE" == "sample" ]]; then
+      EXTRA_ARGS+=(--sample)
+    else
+      EXTRA_ARGS+=(--greedy)
+    fi
+
     if [[ "$MODE" == "single-csv" ]]; then
       EXTRA_ARGS+=(--data-csv "$DATA_PATH")
     else
@@ -130,6 +135,4 @@ PYTHONPATH=. "$PYTHON_BIN" "$CMD" \
   --ff-size           "$FF_SIZE" \
   --tanh-xplor        "$TANH_XPLOR" \
   --model-weight      "$MODEL_WEIGHT" \
-  --max-print-instances "$PRINT_INSTANCES" \
-  --stoch-rollouts    "$STOCH_ROLLOUTS" \
   "${EXTRA_ARGS[@]}"

@@ -46,6 +46,7 @@ class PolyNet_DVRPTW(nn.Module):
             num_heads=head_count,
             feedforward_hidden=ff_size,
             tanh_clipping=tanh_xplor,
+            normalization="batch",
         )
         self.greedy = greedy
 

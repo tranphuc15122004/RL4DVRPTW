@@ -9,39 +9,39 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 # ---- Problem parameters ----
 PROBLEM_TYPE="${PROBLEM_TYPE:-dvrptw}"
-CUSTOMERS="${CUSTOMERS:-100}"
-VEHICLES="${VEHICLES:-5}"
-VEH_CAPA="${VEH_CAPA:-1300}"
+CUSTOMERS="${CUSTOMERS:-400}"
+VEHICLES="${VEHICLES:-20}"
+VEH_CAPA="${VEH_CAPA:-200}"
 VEH_SPEED="${VEH_SPEED:-1}"
 
 # ---- Model ----
 MODEL_WEIGHT="${MODEL_WEIGHT:-data/_PolyNet/chkpt_best.pyth}"
 MODEL_ARGS="${MODEL_ARGS:-}"                     # optional: path to training args.json
 MODEL_SIZE="${MODEL_SIZE:-128}"
-LAYER_COUNT="${LAYER_COUNT:-3}"
+LAYER_COUNT="${LAYER_COUNT:-5}"
 HEAD_COUNT="${HEAD_COUNT:-8}"
-FF_SIZE="${FF_SIZE:-512}"
+FF_SIZE="${FF_SIZE:-256}"
 TANH_XPLOR="${TANH_XPLOR:-10}"
 CUST_K="${CUST_K:-}"
 
 # ---- Inference mode ----
 # MODE can be: single-csv, single-pyth, batch-csv, batch-pyth
-MODE="${MODE:-single-csv}"
-DATA_PATH="${DATA_PATH:-data/datasets/100/h100c101.csv}"
+MODE="${MODE:-batch-csv}"
+DATA_PATH="${DATA_PATH:-data/datasets/h400}"
 
 # ---- Output ----
-OUTPUT_DIR="${OUTPUT_DIR:-output/polynet_infer}"
+OUTPUT_DIR="${OUTPUT_DIR:-infer/polynet_infer_400_cap200_s}"
 SAVE_JSON="${SAVE_JSON:-}"
 VERIFY="${VERIFY:-1}"
 PRINT_INSTANCES="${PRINT_INSTANCES:-3}"
 STOCH_ROLLOUTS="${STOCH_ROLLOUTS:-100}"
 
 # ---- Decode ----
-DECODE="${DECODE:-greedy}"   # greedy or sample
+DECODE="${DECODE:-sample}"   # greedy or sample
 
 # ---- Misc ----
 NO_CUDA="${NO_CUDA:-0}"
-RNG_SEED="${RNG_SEED:-}"
+RNG_SEED="${RNG_SEED:-1}"
 NO_NORMALIZE="${NO_NORMALIZE:-0}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

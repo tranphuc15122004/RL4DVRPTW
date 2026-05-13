@@ -141,19 +141,33 @@ def parse_batch_args(argv=None):
 
     args, remain = parser.parse_known_args(argv)
 
-    # Merge with general args via parse_args
-    general_args = parse_args(remain)
-    for key in vars(general_args):
-        if not hasattr(args, key) or getattr(args, key) is None:
-            setattr(args, key, getattr(general_args, key))
-
-    # Add inference args
-    infer_parser = ArgumentParser(add_help=False)
+    # Add inference args to a temporary parser to parse EVERYTHING using parse_known_args
+    infer_parser = ArgumentParser(add_help=False, allow_abbrev=False)
     add_infer_args(infer_parser)
-    infer_args, _ = infer_parser.parse_known_args(argv)
+    infer_args, remain2 = infer_parser.parse_known_args(remain)
     for key in vars(infer_args):
         if not hasattr(args, key) or getattr(args, key) is None:
             setattr(args, key, getattr(infer_args, key))
+
+    # Then parse the rest using the model's parse_args, but we must protect from parser.parse_args throwing error.
+    # We will temporarily override ArgumentParser inside utils._args or use a safe method.
+    import argparse
+    class SafeArgumentParser(argparse.ArgumentParser):
+        def parse_args(self, args=None, namespace=None):
+            return self.parse_known_args(args, namespace)[0]
+    
+    import utils._args as utils_args_module
+    old_parser = utils_args_module.ArgumentParser
+    utils_args_module.ArgumentParser = SafeArgumentParser
+    try:
+        from utils._args import parse_args as base_parse_args
+        general_args = base_parse_args(remain2)
+        for key in vars(general_args):
+            if not hasattr(args, key) or getattr(args, key) is None:
+                setattr(args, key, getattr(general_args, key))
+    finally:
+        utils_args_module.ArgumentParser = old_parser
+
 
     # Set defaults for greedy/sample
     if not hasattr(args, "greedy"):
@@ -256,8 +270,28 @@ def infer_on_file(args, model_type, data_path, is_csv, device, learner=None, env
         route_diags = [route_diag_for_instance(data, routes, idx)
                        for idx in range(len(routes))]
         raw_cc = compute_cost_components(raw_data, routes, args.pending_cost, args.late_cost)
+        norm_cc = compute_cost_components(data, routes, args.pending_cost, args.late_cost)
 
         elapsed = time.time() - start_t
+
+        num_instances = len(raw_cc)
+        if num_instances > 0:
+            mean_distance = sum(c.get("distance", 0) for c in raw_cc) / num_instances
+            mean_late_time = sum(c.get("late_time", 0) for c in raw_cc) / num_instances
+            mean_late_penalty = sum(c.get("late_penalty", 0) for c in raw_cc) / num_instances
+            mean_skipped_orders = sum(c.get("skipped_orders", 0) for c in raw_cc) / num_instances
+            mean_skipped_penalty = sum(c.get("skipped_penalty", 0) for c in raw_cc) / num_instances
+            mean_reward = sum(c.get("reward", 0) for c in raw_cc) / num_instances
+            mean_total_cost_comp = sum(c.get("total_cost", 0) for c in raw_cc) / num_instances
+            mean_time_limit_penalty = sum(c.get("time_limit_penalty", 0) for c in raw_cc) / num_instances
+            
+            mean_norm_distance = sum(c.get("distance", 0) for c in norm_cc) / num_instances
+            mean_norm_late_time = sum(c.get("late_time", 0) for c in norm_cc) / num_instances
+            mean_norm_late_penalty = sum(c.get("late_penalty", 0) for c in norm_cc) / num_instances
+        else:
+            mean_distance = mean_late_time = mean_late_penalty = mean_skipped_orders = 0.0
+            mean_skipped_penalty = mean_reward = mean_total_cost_comp = mean_time_limit_penalty = 0.0
+            mean_norm_distance = mean_norm_late_time = mean_norm_late_penalty = 0.0
 
         result = {
             "file": os.path.basename(data_path),
@@ -269,11 +303,23 @@ def infer_on_file(args, model_type, data_path, is_csv, device, learner=None, env
             "mean_raw_replay_cost": raw_replay_costs.mean().item(),
             "total_skipped": sum(d["missing_count"] for d in route_diags),
             "elapsed_seconds": elapsed,
+            "mean_distance": mean_distance,
+            "mean_late_time": mean_late_time,
+            "mean_late_penalty": mean_late_penalty,
+            "mean_skipped_orders": mean_skipped_orders,
+            "mean_skipped_penalty": mean_skipped_penalty,
+            "mean_time_limit_penalty": mean_time_limit_penalty,
+            "mean_reward": mean_reward,
+            "mean_total_cost_comp": mean_total_cost_comp,
+            "mean_norm_distance": mean_norm_distance,
+            "mean_norm_late_time": mean_norm_late_time,
+            "mean_norm_late_penalty": mean_norm_late_penalty,
             "routes": routes,
             "costs": costs,
             "raw_replay_costs": raw_replay_costs,
             "route_diagnostics": route_diags,
             "raw_cost_components": raw_cc,
+            "norm_cost_components": norm_cc,
         }
         return result
 
@@ -292,7 +338,11 @@ def write_aggregated_csv(results, output_path):
     """Write per-file aggregated results to a CSV."""
     fieldnames = [
         "file", "model", "num_instances", "mean_cost", "std_cost",
-        "mean_raw_replay_cost", "total_skipped", "elapsed_seconds"
+        "mean_raw_replay_cost", "total_skipped", "elapsed_seconds",
+        "mean_distance", "mean_late_time", "mean_late_penalty", 
+        "mean_skipped_orders", "mean_skipped_penalty", 
+        "mean_time_limit_penalty", "mean_reward", "mean_total_cost_comp",
+        "mean_norm_distance", "mean_norm_late_time", "mean_norm_late_penalty"
     ]
     with open(output_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -300,6 +350,15 @@ def write_aggregated_csv(results, output_path):
         for r in results:
             writer.writerow({k: r.get(k, "") for k in fieldnames})
     print(f"Wrote aggregated CSV to '{output_path}'")
+    
+    try:
+        import pandas as pd
+        excel_path = output_path.replace(".csv", ".xlsx")
+        df = pd.read_csv(output_path)
+        df.to_excel(excel_path, index=False)
+        print(f"Wrote aggregated Excel to '{excel_path}'")
+    except ImportError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +384,33 @@ def run_comparison(args, data_path, is_csv, device, am_learner, pn_learner, env_
         "pn_skipped": pn_result["total_skipped"] if pn_result else None,
         "am_elapsed": am_result["elapsed_seconds"] if am_result else None,
         "pn_elapsed": pn_result["elapsed_seconds"] if pn_result else None,
+        
+        # Additional fields for AM
+        "am_distance": am_result["mean_distance"] if am_result else None,
+        "am_late_time": am_result["mean_late_time"] if am_result else None,
+        "am_late_penalty": am_result["mean_late_penalty"] if am_result else None,
+        "am_skipped_orders": am_result["mean_skipped_orders"] if am_result else None,
+        "am_skipped_penalty": am_result["mean_skipped_penalty"] if am_result else None,
+        "am_time_limit_penalty": am_result["mean_time_limit_penalty"] if am_result else None,
+        "am_reward": am_result["mean_reward"] if am_result else None,
+        "am_total_cost_comp": am_result["mean_total_cost_comp"] if am_result else None,
+        "am_norm_distance": am_result["mean_norm_distance"] if am_result else None,
+        "am_norm_late_time": am_result["mean_norm_late_time"] if am_result else None,
+        "am_norm_late_penalty": am_result["mean_norm_late_penalty"] if am_result else None,
+
+        # Additional fields for PolyNet
+        "pn_distance": pn_result["mean_distance"] if pn_result else None,
+        "pn_late_time": pn_result["mean_late_time"] if pn_result else None,
+        "pn_late_penalty": pn_result["mean_late_penalty"] if pn_result else None,
+        "pn_skipped_orders": pn_result["mean_skipped_orders"] if pn_result else None,
+        "pn_skipped_penalty": pn_result["mean_skipped_penalty"] if pn_result else None,
+        "pn_time_limit_penalty": pn_result["mean_time_limit_penalty"] if pn_result else None,
+        "pn_reward": pn_result["mean_reward"] if pn_result else None,
+        "pn_total_cost_comp": pn_result["mean_total_cost_comp"] if pn_result else None,
+        "pn_norm_distance": pn_result["mean_norm_distance"] if pn_result else None,
+        "pn_norm_late_time": pn_result["mean_norm_late_time"] if pn_result else None,
+        "pn_norm_late_penalty": pn_result["mean_norm_late_penalty"] if pn_result else None,
+
         "cost_diff": (am_result["mean_cost"] - pn_result["mean_cost"])
                      if (am_result and pn_result) else None,
         "am_result": am_result,
@@ -475,6 +561,14 @@ def main():
                 "am_raw_replay", "pn_raw_replay",
                 "am_skipped", "pn_skipped",
                 "am_elapsed", "pn_elapsed",
+                "am_distance", "am_late_time", "am_late_penalty", 
+                "am_skipped_orders", "am_skipped_penalty", 
+                "am_time_limit_penalty", "am_reward", "am_total_cost_comp",
+                "am_norm_distance", "am_norm_late_time", "am_norm_late_penalty",
+                "pn_distance", "pn_late_time", "pn_late_penalty", 
+                "pn_skipped_orders", "pn_skipped_penalty", 
+                "pn_time_limit_penalty", "pn_reward", "pn_total_cost_comp",
+                "pn_norm_distance", "pn_norm_late_time", "pn_norm_late_penalty"
             ])
             writer.writeheader()
             for comp in comparisons:
@@ -493,6 +587,14 @@ def main():
                     "pn_elapsed": comp["pn_elapsed"],
                 })
         print(f"Wrote aggregated comparison CSV to '{agg_path}'")
+        try:
+            import pandas as pd
+            excel_path = agg_path.replace(".csv", ".xlsx")
+            df = pd.read_csv(agg_path)
+            df.to_excel(excel_path, index=False)
+            print(f"Wrote aggregated comparison Excel to '{excel_path}'")
+        except ImportError:
+            pass
 
     else:
         # Single model mode
